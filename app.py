@@ -30,13 +30,11 @@ if pathway == "Green Hydrogen":
     wind_capex = st.sidebar.slider("Wind CAPEX ($/kW)", min_value=800, max_value=2500, value=1400, step=50)
     elec_capex = st.sidebar.slider("Electrolyser CAPEX ($/kW)", min_value=400, max_value=1500, value=800, step=50)
     
-    # NEW: Green Operational Assumptions
     st.sidebar.header("Green Operations")
     green_opex = st.sidebar.slider("OPEX (% of CAPEX)", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
     water_capex_rate = st.sidebar.slider("Water CAPEX ($/MW)", min_value=50000, max_value=300000, value=150000, step=10000)
     water_om_rate = st.sidebar.slider("Water O&M ($/m³)", min_value=0.01, max_value=0.20, value=0.05, step=0.01)
     stack_rate = st.sidebar.slider("Stack Replacement ($/kW)", min_value=100, max_value=600, value=350, step=50)
-    
 else:
     st.sidebar.header("Blue Tech & Fuel")
     smr_capex = st.sidebar.slider("SMR CAPEX ($/kW)", min_value=400, max_value=1500, value=850, step=50)
@@ -44,34 +42,11 @@ else:
     gas_price = st.sidebar.slider("Natural Gas Price ($/MMBtu)", min_value=1.0, max_value=8.0, value=2.63, step=0.1)
     pipeline_cost = st.sidebar.slider("Pipeline Cost ($/km)", min_value=100000, max_value=1000000, value=500000, step=50000)
     
-    # NEW: Blue Operational Assumptions
     st.sidebar.header("Blue Operations")
     gas_cons = st.sidebar.slider("Gas Consumption (MMBtu/kg)", min_value=0.10, max_value=0.25, value=0.15, step=0.01)
     co2_cost_rate = st.sidebar.slider("CO2 Transport & Storage ($/t)", min_value=10, max_value=100, value=50, step=5)
     smr_opex = st.sidebar.slider("SMR OPEX (% of CAPEX)", min_value=2.0, max_value=8.0, value=4.7, step=0.1)
     ccs_opex = st.sidebar.slider("CCS OPEX (% of CAPEX)", min_value=1.0, max_value=6.0, value=3.0, step=0.5)
-
-# --- NEW: DISPLAY ASSUMPTIONS PANEL ---
-st.sidebar.markdown("---")
-with st.sidebar.expander("📋 View Base Assumptions"):
-    st.write(f"**Pathway:** {pathway}")
-    st.write(f"**Plant Size:** {plant_size} MW")
-    st.write(f"**WACC:** {discount_rate}%")
-    if pathway == "Green Hydrogen":
-        st.write(f"**Scenario:** {scenario}")
-        st.write(f"**Electrolyser Eff:** {electrolyser_eff} kWh/kg")
-        st.write(f"**Solar CAPEX:** ${solar_capex}/kW")
-        st.write(f"**Wind CAPEX:** ${wind_capex}/kW")
-        st.write(f"**Electrolyser CAPEX:** ${elec_capex}/kW")
-        st.write(f"**Water CAPEX:** ${water_capex_rate}/MW")
-        st.write(f"**Water O&M:** ${water_om_rate}/m³")
-        st.write(f"**Stack Repl:** ${stack_rate}/kW")
-    else:
-        st.write(f"**SMR CAPEX:** ${smr_capex}/kW")
-        st.write(f"**CCS CAPEX:** ${ccs_capex}/kW")
-        st.write(f"**Gas Price:** ${gas_price}/MMBtu")
-        st.write(f"**Gas Cons:** {gas_cons} MMBtu/kg")
-        st.write(f"**CO2 Cost:** ${co2_cost_rate}/t")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Map View Mode")
@@ -112,13 +87,12 @@ if pathway == "Green Hydrogen":
         
         annual_water_om = (annual_h2 * 10) / 1000 * water_om_rate
         annual_opex = (total_capex * (green_opex / 100)) + annual_water_om
-        
         stack_pv = (size_kw * stack_rate) / (1 + r)**10
         
         lcoh = ((total_capex * crf) + annual_opex + stack_pv) / annual_h2
-        return lcoh, total_capex, annual_h2, cf
+        return lcoh, total_capex, annual_h2, cf, renew_capex, elec_capex_total, grid_capex, water_capex
         
-    df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF']] = df.apply(lambda row: pd.Series(calc_green(row)), axis=1)
+    df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF', 'Renew CAPEX', 'Elec CAPEX', 'Grid CAPEX', 'Water CAPEX']] = df.apply(lambda row: pd.Series(calc_green(row)), axis=1)
     
 else: # Blue Hydrogen
     df = pd.read_csv("blue_master.csv")
@@ -142,9 +116,11 @@ else: # Blue Hydrogen
         annual_opex = (smr_total * (smr_opex / 100)) + (ccs_total * (ccs_opex / 100)) + gas_cost + co2_cost + water_om
         
         lcoh = ((total_capex * crf) + annual_opex) / annual_h2
-        return lcoh, total_capex, annual_h2, 0.90
+        infra_capex = gas_pipe_capex + co2_pipe_capex + grid_capex
         
-    df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF']] = df.apply(lambda row: pd.Series(calc_blue(row)), axis=1)
+        return lcoh, total_capex, annual_h2, 0.90, smr_total, ccs_total, infra_capex, water_capex
+        
+    df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF', 'SMR CAPEX', 'CCS CAPEX', 'Infrastructure', 'Water CAPEX']] = df.apply(lambda row: pd.Series(calc_blue(row)), axis=1)
 
 # Filter for "Best Site per LGA"
 if map_view == "Show Best Site per LGA (Cheapest)":
@@ -154,52 +130,89 @@ else:
 
 df_display = df_display[df_display['Calculated LCOH'].apply(lambda x: pd.notna(x) and x != float('inf'))]
 
-# --- 4. CREATE MAP ---
-m = folium.Map(location=[9.0820, 8.6753], zoom_start=6)
+# --- 4. PAGE LAYOUT (MAP & CHARTS) ---
+col1, col2 = st.columns([2, 1])
 
-# --- 5. COLORMAP & DOTS ---
-if pathway == "Green Hydrogen":
-    colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=30)
-else:
-    colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=5)
-
-colormap.caption = "LCOH ($/kg)"
-m.add_child(colormap)
-
-for index, row in df_display.iterrows():
-    current_lcoh = row['Calculated LCOH']
-    dot_color = colormap(current_lcoh)
-    radius = 8 if map_view == "Show Best Site per LGA (Cheapest)" else 5
+with col1:
+    st.subheader("Interactive Map")
+    
+    # MAP LOCKED TO NIGERIA BOUNDARIES
+    m = folium.Map(
+        location=[9.0820, 8.6753], 
+        zoom_start=6, 
+        min_zoom=5,
+        max_zoom=12,
+        max_bounds=[[3.5, 2.0], [14.5, 15.5]] # Locks the map to Nigeria
+    )
     
     if pathway == "Green Hydrogen":
-        popup_html = f"""
-        <div style="font-family: Arial; width: 250px;">
-            <h4 style="margin-bottom: 5px;">{row['NAME_2']} (ID: {row['id']})</h4>
-            <hr style="margin: 5px 0;">
-            <b>Scenario:</b> {scenario}<br>
-            <b>LCOH:</b> ${current_lcoh:.2f}/kg<br>
-            <b>Wind Speed:</b> {row['SAMPLE_wind1']:.1f} m/s<br>
-            <b>CF:</b> {row['Calculated CF']*100:.1f}%<br>
-            <b>Grid Dist:</b> {row['Distance (km)']:.1f} km<br>
-            <b>CAPEX:</b> ${row['Calculated CAPEX']:,.0f}
-        </div>
-        """
+        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=30)
     else:
-        popup_html = f"""
-        <div style="font-family: Arial; width: 250px;">
-            <h4 style="margin-bottom: 5px;">{row['NAME_2']} (ID: {row['id']})</h4>
-            <hr style="margin: 5px 0;">
-            <b>LCOH:</b> ${current_lcoh:.2f}/kg<br>
-            <b>Gas Dist:</b> {row['gas pipeline (km)']:.1f} km<br>
-            <b>CO2 Dist:</b> {row['Storage distance (km)']:.1f} km<br>
-            <b>CAPEX:</b> ${row['Calculated CAPEX']:,.0f}
-        </div>
-        """
-        
-    folium.CircleMarker(
-        location=[row['Latitude'], row['Longitude']], radius=radius, color=dot_color,
-        fill=True, fill_color=dot_color, fill_opacity=0.8,
-        popup=folium.Popup(popup_html, max_width=300)
-    ).add_to(m)
+        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=5)
+    colormap.caption = "LCOH ($/kg)"
+    m.add_child(colormap)
 
-st_folium(m, width=1200, height=600)
+    for index, row in df_display.iterrows():
+        current_lcoh = row['Calculated LCOH']
+        dot_color = colormap(current_lcoh)
+        radius = 8 if map_view == "Show Best Site per LGA (Cheapest)" else 5
+        
+        if pathway == "Green Hydrogen":
+            popup_html = f"""
+            <div style="font-family: Arial; width: 250px;">
+                <h4 style="margin-bottom: 5px;">{row['NAME_2']} (ID: {row['id']})</h4>
+                <hr style="margin: 5px 0;">
+                <b>Scenario:</b> {scenario}<br>
+                <b>LCOH:</b> ${current_lcoh:.2f}/kg<br>
+                <b>Wind Speed:</b> {row['SAMPLE_wind1']:.1f} m/s<br>
+                <b>CF:</b> {row['Calculated CF']*100:.1f}%<br>
+                <b>Grid Dist:</b> {row['Distance (km)']:.1f} km<br>
+                <b>CAPEX:</b> ${row['Calculated CAPEX']:,.0f}
+            </div>
+            """
+        else:
+            popup_html = f"""
+            <div style="font-family: Arial; width: 250px;">
+                <h4 style="margin-bottom: 5px;">{row['NAME_2']} (ID: {row['id']})</h4>
+                <hr style="margin: 5px 0;">
+                <b>LCOH:</b> ${current_lcoh:.2f}/kg<br>
+                <b>Gas Dist:</b> {row['gas pipeline (km)']:.1f} km<br>
+                <b>CO2 Dist:</b> {row['Storage distance (km)']:.1f} km<br>
+                <b>CAPEX:</b> ${row['Calculated CAPEX']:,.0f}
+            </div>
+            """
+        
+        folium.CircleMarker(
+            location=[row['Latitude'], row['Longitude']], radius=radius, color=dot_color,
+            fill=True, fill_color=dot_color, fill_opacity=0.8,
+            popup=folium.Popup(popup_html, max_width=300)
+        ).add_to(m)
+
+    st_folium(m, width=800, height=500)
+
+with col2:
+    st.subheader("Economic Insights")
+    
+    # Chart 1: Top 10 LCOH Ranking
+    st.markdown("**Top 10 Cheapest Sites ($/kg)**")
+    top_10 = df_display.nsmallest(10, 'Calculated LCOH').set_index('NAME_2')['Calculated LCOH']
+    st.bar_chart(top_10, color="#2e8b57") 
+    
+    # Chart 2: CAPEX Breakdown
+    st.markdown("**CAPEX Breakdown for Selected Site**")
+    selected_site = st.selectbox("Select a site to view CAPEX:", df_display['NAME_2'].unique())
+    
+    site_row = df_display[df_display['NAME_2'] == selected_site].iloc[0]
+    
+    if pathway == "Green Hydrogen":
+        capex_data = pd.DataFrame({
+            'Component': ['Renewables', 'Electrolyser', 'Grid', 'Water'],
+            'CAPEX ($)': [site_row['Renew CAPEX'], site_row['Elec CAPEX'], site_row['Grid CAPEX'], site_row['Water CAPEX']]
+        })
+    else:
+        capex_data = pd.DataFrame({
+            'Component': ['SMR Plant', 'CCS', 'Infrastructure', 'Water'],
+            'CAPEX ($)': [site_row['SMR CAPEX'], site_row['CCS CAPEX'], site_row['Infrastructure'], site_row['Water CAPEX']]
+        })
+        
+    st.bar_chart(capex_data.set_index('Component'), color="#d2691e")
