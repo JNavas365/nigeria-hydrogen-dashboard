@@ -16,6 +16,16 @@ pathway = st.sidebar.radio("Select Pathway", ["Green Hydrogen", "Blue Hydrogen"]
 
 st.sidebar.markdown("---")
 
+# REGION FILTER
+st.sidebar.header("Geographic Filter")
+region_filter = st.sidebar.selectbox(
+    "Select Region", 
+    ["All Regions", "North West (NW)", "North East (NE)", "North Central (NC)", "South West (SW)", "South East (SE)", "South South (SS)"]
+)
+region_code = region_filter.split("(")[1].replace(")", "") if "(" in region_filter else "All"
+
+st.sidebar.markdown("---")
+
 # Financial Controls (Shared)
 st.sidebar.header("Financial Assumptions")
 discount_rate = st.sidebar.slider("Discount Rate (WACC) %", min_value=3.0, max_value=20.0, value=10.0, step=0.5)
@@ -50,7 +60,7 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.header("Map View Mode")
-map_view = st.sidebar.radio("Select View", ["Show All Sites", "Show Best Site per LGA (Cheapest)"])
+map_view = st.sidebar.radio("Select View", ["Show All Sites", "Show Best Site per LGA (Cheapest)"], index=1)
 
 # --- 3. CALCULATION ENGINE ---
 r = discount_rate / 100
@@ -75,7 +85,7 @@ if pathway == "Green Hydrogen":
             cf = cf_wind
             annual_h2 = (size_kw * 8760 * cf) / electrolyser_eff
             renew_capex = (size_kw / cf) * (wind_capex * scale_factor)
-        else: # Hybrid
+        else:
             cf = cf_solar + cf_wind
             annual_h2 = (size_kw * 8760 * cf) / electrolyser_eff
             renew_capex = ((size_kw / cf_solar) * (solar_capex * scale_factor)) + ((size_kw / cf_wind) * (wind_capex * scale_factor))
@@ -94,7 +104,7 @@ if pathway == "Green Hydrogen":
         
     df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF', 'Renew CAPEX', 'Elec CAPEX', 'Grid CAPEX', 'Water CAPEX']] = df.apply(lambda row: pd.Series(calc_green(row)), axis=1)
     
-else: # Blue Hydrogen
+else:
     df = pd.read_csv("blue_master.csv")
     
     def calc_blue(row):
@@ -122,7 +132,16 @@ else: # Blue Hydrogen
         
     df[['Calculated LCOH', 'Calculated CAPEX', 'Calculated H2', 'Calculated CF', 'SMR CAPEX', 'CCS CAPEX', 'Infrastructure', 'Water CAPEX']] = df.apply(lambda row: pd.Series(calc_blue(row)), axis=1)
 
-# Filter for "Best Site per LGA"
+# --- 4. SMART FILTERING LOGIC ---
+region_col = next((col for col in df.columns if col.strip().lower() == 'region'), None)
+
+if region_code != "All":
+    if region_col:
+        df = df[df[region_col].astype(str).str.strip().str.upper() == region_code]
+    else:
+        st.error(f"⚠️ Region column not found! Here are the columns I found: {list(df.columns)}")
+        st.stop()
+
 if map_view == "Show Best Site per LGA (Cheapest)":
     df_display = df.loc[df.groupby('NAME_2')['Calculated LCOH'].idxmin()]
 else:
@@ -130,32 +149,26 @@ else:
 
 df_display = df_display[df_display['Calculated LCOH'].apply(lambda x: pd.notna(x) and x != float('inf'))]
 
-# --- 4. PAGE LAYOUT (MAP & CHARTS) ---
+# --- 5. PAGE LAYOUT (MAP & CHARTS) ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("Interactive Map")
+    st.subheader(f"Interactive Map: {region_filter}")
     
-    # MAP LOCKED TO NIGERIA BOUNDARIES
-    m = folium.Map(
-        location=[9.0820, 8.6753], 
-        zoom_start=6, 
-        min_zoom=5,
-        max_zoom=12,
-        max_bounds=[[3.5, 2.0], [14.5, 15.5]] # Locks the map to Nigeria
-    )
+    m = folium.Map(location=[9.0820, 8.6753], zoom_start=6, min_zoom=5, max_zoom=12, max_bounds=[[3.5, 2.0], [14.5, 15.5]] )
     
     if pathway == "Green Hydrogen":
-        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=30)
+        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=10, vmax=25)
     else:
-        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=0, vmax=5)
+        colormap = LinearColormap(colors=['green', 'yellow', 'red'], vmin=1.5, vmax=4.0)
+        
     colormap.caption = "LCOH ($/kg)"
     m.add_child(colormap)
 
     for index, row in df_display.iterrows():
         current_lcoh = row['Calculated LCOH']
         dot_color = colormap(current_lcoh)
-        radius = 8 if map_view == "Show Best Site per LGA (Cheapest)" else 5
+        radius = 8 if map_view == "Show Best Site per LGA (Cheapest)" else 3
         
         if pathway == "Green Hydrogen":
             popup_html = f"""
@@ -193,26 +206,29 @@ with col1:
 with col2:
     st.subheader("Economic Insights")
     
-    # Chart 1: Top 10 LCOH Ranking
     st.markdown("**Top 10 Cheapest Sites ($/kg)**")
-    top_10 = df_display.nsmallest(10, 'Calculated LCOH').set_index('NAME_2')['Calculated LCOH']
-    st.bar_chart(top_10, color="#2e8b57") 
-    
-    # Chart 2: CAPEX Breakdown
-    st.markdown("**CAPEX Breakdown for Selected Site**")
-    selected_site = st.selectbox("Select a site to view CAPEX:", df_display['NAME_2'].unique())
-    
-    site_row = df_display[df_display['NAME_2'] == selected_site].iloc[0]
-    
-    if pathway == "Green Hydrogen":
-        capex_data = pd.DataFrame({
-            'Component': ['Renewables', 'Electrolyser', 'Grid', 'Water'],
-            'CAPEX ($)': [site_row['Renew CAPEX'], site_row['Elec CAPEX'], site_row['Grid CAPEX'], site_row['Water CAPEX']]
-        })
+    if not df_display.empty:
+        top_10 = df_display.nsmallest(10, 'Calculated LCOH').set_index('NAME_2')['Calculated LCOH']
+        st.bar_chart(top_10, color="#2e8b57") 
     else:
-        capex_data = pd.DataFrame({
-            'Component': ['SMR Plant', 'CCS', 'Infrastructure', 'Water'],
-            'CAPEX ($)': [site_row['SMR CAPEX'], site_row['CCS CAPEX'], site_row['Infrastructure'], site_row['Water CAPEX']]
-        })
+        st.info("No sites available for the current region.")
+    
+    st.markdown("**CAPEX Breakdown for Selected Site**")
+    if not df_display.empty:
+        selected_site = st.selectbox("Select a site to view CAPEX:", df_display['NAME_2'].unique())
+        site_row = df_display[df_display['NAME_2'] == selected_site].iloc[0]
         
-    st.bar_chart(capex_data.set_index('Component'), color="#d2691e")
+        if pathway == "Green Hydrogen":
+            capex_data = pd.DataFrame({
+                'Component': ['Renewables', 'Electrolyser', 'Grid', 'Water'],
+                'CAPEX ($)': [site_row['Renew CAPEX'], site_row['Elec CAPEX'], site_row['Grid CAPEX'], site_row['Water CAPEX']]
+            })
+        else:
+            capex_data = pd.DataFrame({
+                'Component': ['SMR Plant', 'CCS', 'Infrastructure', 'Water'],
+                'CAPEX ($)': [site_row['SMR CAPEX'], site_row['CCS CAPEX'], site_row['Infrastructure'], site_row['Water CAPEX']]
+            })
+            
+        st.bar_chart(capex_data.set_index('Component'), color="#d2691e")
+    else:
+        st.warning("No sites available for the current region.")
